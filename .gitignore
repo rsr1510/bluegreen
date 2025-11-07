@@ -1,0 +1,53 @@
+# === Node.js ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# === Logs ===
+logs/
+*.log
+*.out
+*.err
+
+# === Environment / Secrets ===
+.env
+*.env.*
+*.key
+*.pem
+*.crt
+*.csr
+
+# === Docker ===
+.dockerignore
+docker-compose.override.yml
+*.pid
+docker-data/
+*.tar
+
+# === Jenkins ===
+@tmp/
+@libs/
+workspace/
+builds/
+users/
+queue/
+updates/
+secrets/
+*.jpi
+*.hpi
+
+# === System / Editor / OS ===
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*.tmp
+*.lock
+
+# === Misc ===
+tmp/
+.cache/
+coverage/

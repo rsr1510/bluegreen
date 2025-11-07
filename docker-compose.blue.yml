@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  blue-app:
+    image: ${DOCKER_USERNAME}/blue-green-app:${VERSION}
+    container_name: blue-app
+    environment:
+      - PORT=3000
+      - VERSION=${VERSION}
+      - ENV=blue
+    ports:
+      - "3001:3000"
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
