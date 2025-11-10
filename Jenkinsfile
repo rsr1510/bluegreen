@@ -9,7 +9,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 echo '📦 Checking out repository...'
@@ -20,7 +19,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    def version = sh(script: "date +%Y%m%d%H%M%S", returnStdout: true).trim()
+                    def version = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
                     env.VERSION = version
                     echo "🔧 Building Docker image version ${version}"
                     sh """
@@ -48,12 +47,12 @@ pipeline {
                 script {
                     echo '🔍 Determining active environment...'
                     def activeEnv = sh(script: "docker ps --format '{{.Names}}' | grep -E 'blue-app|green-app' | head -n 1", returnStdout: true).trim()
-                    if (activeEnv.contains("blue")) {
-                        env.ACTIVE_ENV = "blue"
-                        env.TARGET_ENV = "green"
+                    if (activeEnv.contains('blue')) {
+                        env.ACTIVE_ENV = 'blue'
+                        env.TARGET_ENV = 'green'
                     } else {
-                        env.ACTIVE_ENV = "green"
-                        env.TARGET_ENV = "blue"
+                        env.ACTIVE_ENV = 'green'
+                        env.TARGET_ENV = 'blue'
                     }
                     echo "🔵 Active: ${ACTIVE_ENV}, 🟢 Target: ${TARGET_ENV}"
                 }
@@ -67,10 +66,14 @@ pipeline {
                     sh """
                         export VERSION=${VERSION}
                         export DOCKER_USERNAME=${DOCKER_USERNAME}
+                        echo "🧹 Cleaning up any old ${TARGET_ENV} containers..."
+                        docker-compose -f docker-compose.${TARGET_ENV}.yml down -v --remove-orphans || true
                         docker rm -f ${TARGET_ENV}-app || true
-                        docker-compose -f docker-compose.${TARGET_ENV}.yml down || true
+                        docker network prune -f || true
+                        echo "🚀 Bringing up fresh ${TARGET_ENV}-app..."
                         docker-compose -f docker-compose.${TARGET_ENV}.yml pull
-                        docker-compose -f docker-compose.${TARGET_ENV}.yml up -d
+                        docker-compose -f docker-compose.${TARGET_ENV}.yml up -d --force-recreate
+
                     """
                 }
             }
@@ -99,7 +102,7 @@ pipeline {
         stage('Switch Traffic') {
             steps {
                 script {
-                    if (env.TARGET_ENV == "green") {
+                    if (env.TARGET_ENV == 'green') {
                         echo '🔁 Switching Nginx traffic to GREEN...'
                         sh 'bash scripts/switch-to-green.sh'
                     } else {
@@ -114,7 +117,7 @@ pipeline {
             steps {
                 script {
                     echo "🧪 Verifying deployment (version ${VERSION})..."
-                    sh "curl -s http://localhost/ | head -n 5"
+                    sh 'curl -s http://localhost/ | head -n 5'
                     echo '✅ Deployment successful — zero downtime maintained!'
                 }
             }
@@ -129,7 +132,7 @@ pipeline {
                     sh "bash scripts/switch-to-${ACTIVE_ENV}.sh"
                     echo "🔄 Rolled back traffic to ${ACTIVE_ENV}."
                 } else {
-                    echo "⚠️ Rollback skipped — no active environment found."
+                    echo '⚠️ Rollback skipped — no active environment found.'
                 }
             }
         }
