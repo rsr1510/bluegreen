@@ -19,8 +19,8 @@ pipeline {
             steps {
                 script {
                     echo "Building Docker image version ${APP_VERSION}"
-                    bat "docker build -t ${IMAGE_NAME}:${APP_VERSION} ."
-                    bat "docker tag ${IMAGE_NAME}:${APP_VERSION} ${IMAGE_NAME}:latest"
+                    sh "docker build -t ${IMAGE_NAME}:${APP_VERSION} ."
+                    sh "docker tag ${IMAGE_NAME}:${APP_VERSION} ${IMAGE_NAME}:latest"
                 }
             }
         }
@@ -29,9 +29,9 @@ pipeline {
             steps {
                 script {
                     echo "Pushing image to Docker Hub..."
-                    bat "docker login -u ${DOCKER_USERNAME} -p ${DOCKER_PASSWORD}"
-                    bat "docker push ${IMAGE_NAME}:${APP_VERSION}"
-                    bat "docker push ${IMAGE_NAME}:latest"
+                    sh "echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin"
+                    sh "docker push ${IMAGE_NAME}:${APP_VERSION}"
+                    sh "docker push ${IMAGE_NAME}:latest"
                 }
             }
         }
@@ -56,12 +56,12 @@ pipeline {
             steps {
                 script {
                     echo "Deploying version ${APP_VERSION} to ${TARGET_ENV}"
-                    bat """
-                        set VERSION=${APP_VERSION}
-                        set DOCKER_USERNAME=${DOCKER_USERNAME}
-                        docker-compose -f docker-compose.%TARGET_ENV%.yml down
-                        docker-compose -f docker-compose.%TARGET_ENV%.yml pull
-                        docker-compose -f docker-compose.%TARGET_ENV%.yml up -d
+                    sh """
+                        export VERSION=${APP_VERSION}
+                        export DOCKER_USERNAME=${DOCKER_USERNAME}
+                        docker-compose -f docker-compose.${TARGET_ENV}.yml down
+                        docker-compose -f docker-compose.${TARGET_ENV}.yml pull
+                        docker-compose -f docker-compose.${TARGET_ENV}.yml up -d
                     """
                 }
             }
@@ -74,7 +74,7 @@ pipeline {
                     def port = (env.TARGET_ENV == 'blue') ? '3001' : '3002'
                     retry(5) {
                         sleep 5
-                        bat "curl -f http://localhost:${port}/health"
+                        sh "curl -f http://localhost:${port}/health"
                     }
                     echo "Health check passed on ${TARGET_ENV}"
                 }
@@ -85,7 +85,11 @@ pipeline {
             steps {
                 script {
                     echo "Switching traffic to ${TARGET_ENV}"
-                    bat "powershell -ExecutionPolicy Bypass -File .\\scripts\\switch-to-${TARGET_ENV}.ps1"
+                    if (env.TARGET_ENV == 'blue') {
+                        sh "bash scripts/switch-to-blue.sh"
+                    } else {
+                        sh "bash scripts/switch-to-green.sh"
+                    }
                     sleep 5
                 }
             }
@@ -94,7 +98,7 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 script {
-                    bat "curl -f http://localhost:8080/"
+                    sh "curl -f http://localhost:8080/"
                     echo "Traffic successfully switched!"
                 }
             }
@@ -108,11 +112,19 @@ pipeline {
         failure {
             echo "❌ Deployment failed — rolling back..."
             script {
-                bat "powershell -ExecutionPolicy Bypass -File .\\scripts\\switch-to-${ACTIVE_ENV}.ps1"
+                if (env.ACTIVE_ENV) {
+                    if (env.ACTIVE_ENV == 'blue') {
+                        sh "bash scripts/switch-to-blue.sh"
+                    } else {
+                        sh "bash scripts/switch-to-green.sh"
+                    }
+                } else {
+                    echo "Rollback skipped — ACTIVE_ENV not set."
+                }
             }
         }
         always {
-            bat "docker logout"
+            sh "docker logout"
         }
     }
 }
