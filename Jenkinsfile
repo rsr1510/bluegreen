@@ -80,18 +80,27 @@ pipeline {
         }
 
         stage('Health Check') {
-            steps {
-                script {
-                    echo '💚 Running health check...'
-                    def port = (env.TARGET_ENV == 'blue') ? '3001' : '3002'
-                    retry(5) {
-                        sleep 5
-                        sh "curl -f http://localhost:${port}/health"
-                    }
-                    echo "✅ Health check passed on ${TARGET_ENV}"
+        steps {
+            script {
+                echo '💚 Performing health check inside target container...'
+                sh """
+                    # try up to 10 times, 5s apart
+                    for i in {1..10}; do
+                        # run curl inside the target container via docker-compose exec
+                        docker-compose -f docker-compose.${TARGET_ENV}.yml exec -T ${TARGET_ENV}-app sh -c 'curl -s -f http://localhost:3000/health' && {
+                            echo '✅ Health check passed inside container!';
+                            exit 0;
+                        }
+                        echo "Waiting for ${TARGET_ENV}-app to be ready... ($i/10)";
+                        sleep 5;
+                    done
+                    echo '❌ Health check failed inside container after retries.'
+                    exit 1
+                """
                 }
             }
         }
+
 
         stage('Switch Traffic') {
             steps {
