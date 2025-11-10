@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = 'blue-green-app'
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-login')
-        DOCKER_USERNAME = "${DOCKERHUB_CREDENTIALS_USR}"
-        DOCKER_PASSWORD = "${DOCKERHUB_CREDENTIALS_PSW}"
+        DOCKER_USERNAME = credentials('docker-hub-username')
+        DOCKER_PASSWORD = credentials('docker-hub-password')
+        APP_VERSION = "${BUILD_NUMBER}"
+        IMAGE_NAME = "${DOCKER_USERNAME}/blue-green-app"
     }
 
     stages {
@@ -19,11 +19,10 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    def version = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-                    env.VERSION = version
-                    echo "🔧 Building Docker image version ${version}"
+                    echo "🔧 Building Docker image version ${APP_VERSION}"
                     sh """
-                        docker build -t ${DOCKER_USERNAME}/${DOCKER_IMAGE}:${version} .
+                        docker build -t ${IMAGE_NAME}:${APP_VERSION} .
+                        docker tag ${IMAGE_NAME}:${APP_VERSION} ${IMAGE_NAME}:latest
                     """
                 }
             }
@@ -35,8 +34,8 @@ pipeline {
                     echo '📤 Pushing image to Docker Hub...'
                     sh """
                         echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin
-                        docker push ${DOCKER_USERNAME}/${DOCKER_IMAGE}:${VERSION}
-                        docker logout
+                        docker push ${IMAGE_NAME}:${APP_VERSION}
+                        docker push ${IMAGE_NAME}:latest
                     """
                 }
             }
@@ -46,15 +45,15 @@ pipeline {
             steps {
                 script {
                     echo '🔍 Determining active environment...'
-                    def activeEnv = sh(script: "docker ps --format '{{.Names}}' | grep -E 'blue-app|green-app' | head -n 1", returnStdout: true).trim()
-                    if (activeEnv.contains('blue')) {
+                    def nginxConfig = readFile('nginx/nginx.conf')
+                    if (nginxConfig.contains('server blue-app:3000')) {
                         env.ACTIVE_ENV = 'blue'
                         env.TARGET_ENV = 'green'
                     } else {
                         env.ACTIVE_ENV = 'green'
                         env.TARGET_ENV = 'blue'
                     }
-                    echo "🔵 Active: ${ACTIVE_ENV}, 🟢 Target: ${TARGET_ENV}"
+                    echo "🔵 Active: ${env.ACTIVE_ENV}, 🟢 Target: ${env.TARGET_ENV}"
                 }
             }
         }
@@ -62,18 +61,19 @@ pipeline {
         stage('Deploy to Inactive Environment') {
             steps {
                 script {
-                    echo "🚀 Deploying version ${VERSION} to ${TARGET_ENV} environment..."
+                    echo "🚀 Deploying version ${APP_VERSION} to ${TARGET_ENV} environment..."
                     sh """
-                        export VERSION=${VERSION}
+                        export VERSION=${APP_VERSION}
                         export DOCKER_USERNAME=${DOCKER_USERNAME}
+
                         echo "🧹 Cleaning up any old ${TARGET_ENV} containers..."
                         docker-compose -f docker-compose.${TARGET_ENV}.yml down -v --remove-orphans || true
                         docker rm -f ${TARGET_ENV}-app || true
                         docker network prune -f || true
-                        echo "🚀 Bringing up fresh ${TARGET_ENV}-app..."
+
+                        echo "🚀 Starting ${TARGET_ENV}-app fresh..."
                         docker-compose -f docker-compose.${TARGET_ENV}.yml pull
                         docker-compose -f docker-compose.${TARGET_ENV}.yml up -d --force-recreate
-
                     """
                 }
             }
@@ -82,19 +82,13 @@ pipeline {
         stage('Health Check') {
             steps {
                 script {
-                    echo '💚 Performing health check on new environment...'
-                    sh """
-                        for i in {1..10}; do
-                            if curl -s http://${TARGET_ENV}-app:3000/health | grep -q 'OK'; then
-                                echo '✅ Health check passed!';
-                                exit 0;
-                            fi;
-                            echo 'Waiting for app to be ready...';
-                            sleep 5;
-                        done;
-                        echo '❌ Health check failed!';
-                        exit 1;
-                    """
+                    echo '💚 Running health check...'
+                    def port = (env.TARGET_ENV == 'blue') ? '3001' : '3002'
+                    retry(5) {
+                        sleep 5
+                        sh "curl -f http://localhost:${port}/health"
+                    }
+                    echo "✅ Health check passed on ${TARGET_ENV}"
                 }
             }
         }
@@ -102,13 +96,13 @@ pipeline {
         stage('Switch Traffic') {
             steps {
                 script {
-                    if (env.TARGET_ENV == 'green') {
-                        echo '🔁 Switching Nginx traffic to GREEN...'
-                        sh 'bash scripts/switch-to-green.sh'
+                    echo "🔁 Switching traffic to ${TARGET_ENV}..."
+                    if (env.TARGET_ENV == 'blue') {
+                        sh "bash scripts/switch-to-blue.sh"
                     } else {
-                        echo '🔁 Switching Nginx traffic to BLUE...'
-                        sh 'bash scripts/switch-to-blue.sh'
+                        sh "bash scripts/switch-to-green.sh"
                     }
+                    sleep 5
                 }
             }
         }
@@ -116,25 +110,34 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 script {
-                    echo "🧪 Verifying deployment (version ${VERSION})..."
-                    sh 'curl -s http://localhost/ | head -n 5'
-                    echo '✅ Deployment successful — zero downtime maintained!'
+                    echo "🧪 Verifying deployment (v${APP_VERSION})..."
+                    sh "curl -f http://localhost:8080/"
+                    echo "✅ Deployment successful — zero downtime maintained!"
                 }
             }
         }
     }
 
     post {
+        success {
+            echo "✅ Deployment complete — version ${APP_VERSION} is live on ${TARGET_ENV}"
+        }
         failure {
-            echo '❌ Deployment failed — rolling back...'
+            echo "❌ Deployment failed — rolling back..."
             script {
-                if (env.ACTIVE_ENV && fileExists("scripts/switch-to-${ACTIVE_ENV}.sh")) {
-                    sh "bash scripts/switch-to-${ACTIVE_ENV}.sh"
-                    echo "🔄 Rolled back traffic to ${ACTIVE_ENV}."
+                if (env.ACTIVE_ENV) {
+                    if (env.ACTIVE_ENV == 'blue') {
+                        sh "bash scripts/switch-to-blue.sh"
+                    } else {
+                        sh "bash scripts/switch-to-green.sh"
+                    }
                 } else {
-                    echo '⚠️ Rollback skipped — no active environment found.'
+                    echo "⚠️ Rollback skipped — ACTIVE_ENV not set."
                 }
             }
+        }
+        always {
+            sh "docker logout || true"
         }
     }
 }
